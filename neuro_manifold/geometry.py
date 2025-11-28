@@ -40,14 +40,12 @@ class RiemannianManifold(nn.Module):
         """
         # x shape: (B, N, D) or (B, N, M, D) etc.
         # We process last dim D.
+        # Flatten arbitrary leading dims for processing
         original_shape = x.shape
         x_flat = x.reshape(-1, self.dim)
 
         # Predict raw factors
         raw = self.cholesky_field(x_flat) # (Batch*N, D*D)
-
-        # SAFETY: Clamp raw prediction to prevent explosion before softplus
-        raw = torch.clamp(raw, -5.0, 5.0)
 
         # Add Identity bias
         L_flat = raw + self.I_bias
@@ -57,8 +55,7 @@ class RiemannianManifold(nn.Module):
         L = L * self.tril_mask
 
         # Ensure positive diagonal
-        # Added epsilon to prevent singularity
-        L = L * (1 - self.diag_mask) + (F.softplus(L) + 1e-4) * self.diag_mask
+        L = L * (1 - self.diag_mask) + F.softplus(L) * self.diag_mask
 
         # Reshape back: (B, N, D, D)
         return L.view(*original_shape[:-1], self.dim, self.dim)
@@ -76,8 +73,14 @@ class RiemannianManifold(nn.Module):
     def compute_distance(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
         """
         Computes the Mahalanobis distance induced by the local metric G.
-        Legacy method using midpoint approximation (Slow for N^2).
+        Supports broadcasting.
+        x1: (B, N, 1, D) (Query)
+        x2: (B, 1, M, D) (Key)
+        Output: (B, N, M)
         """
+        # Broadcasting difference
+        # x1: (..., N, 1, D)
+        # x2: (..., 1, M, D)
         dx = x2 - x1 # (..., N, M, D)
 
         # Compute metric at midpoint
@@ -89,52 +92,7 @@ class RiemannianManifold(nn.Module):
         G_dx = torch.matmul(G, dx_un) # (..., N, M, D, 1)
         dist_sq = torch.matmul(dx_un.transpose(-1, -2), G_dx).squeeze(-1).squeeze(-1) # (..., N, M)
 
-        return torch.sqrt(torch.clamp(dist_sq, min=1e-6, max=1e6))
-
-    def compute_efficient_distance(self, Q: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
-        """
-        Optimized distance calculation for Attention (Q vs K).
-        Instead of evaluating MLP N^2 times, we approximate G_mid = (G_q + G_k) / 2.
-        Input:
-            Q: (B, N, D)
-            K: (B, M, D)
-        Output:
-            Dist: (B, N, M)
-        Complexity: O(N) MLP evaluations instead of O(N*M).
-        """
-        B, N, D = Q.shape
-        M = K.shape[1]
-
-        # 1. Precompute Metrics (O(N + M))
-        # G_q: (B, N, D, D)
-        L_q = self.get_cholesky_factor(Q)
-        G_q = torch.matmul(L_q, L_q.transpose(-1, -2))
-
-        # G_k: (B, M, D, D)
-        L_k = self.get_cholesky_factor(K)
-        G_k = torch.matmul(L_k, L_k.transpose(-1, -2))
-
-        # 2. Compute Distances
-        # d^2(q, k) approx (q-k)^T * (G_q + G_k)/2 * (q-k)
-        # = 0.5 * [ (q-k)^T G_q (q-k) + (q-k)^T G_k (q-k) ]
-
-        # Let's perform algebraic expansion for memory efficiency (avoid N*M*D*D)
-        # However, for small N (e.g. < 64), direct broadcasting is faster/easier.
-        # Given current settings (N=8, M=8), we use broadcasting.
-
-        # Broadcast to (B, N, M, D, D)
-        G_sum = G_q.unsqueeze(2) + G_k.unsqueeze(1) # (B, N, M, D, D)
-        G_avg = 0.5 * G_sum
-
-        # Delta
-        delta = Q.unsqueeze(2) - K.unsqueeze(1) # (B, N, M, D)
-
-        # d^2 = delta^T G_avg delta
-        delta_un = delta.unsqueeze(-1)
-        G_delta = torch.matmul(G_avg, delta_un)
-        dist_sq = torch.matmul(delta_un.transpose(-1, -2), G_delta).squeeze(-1).squeeze(-1)
-
-        return torch.sqrt(torch.clamp(dist_sq, min=1e-6, max=1e6))
+        return torch.sqrt(torch.clamp(dist_sq, min=1e-6))
 
 class GeodesicFlow(nn.Module):
     """
@@ -156,6 +114,12 @@ class GeodesicFlow(nn.Module):
 
         for _ in range(steps):
             L = self.manifold.get_cholesky_factor(curr_x)
+            # We want to solve G * v_new = v_old
+            # G = L @ L.T
+            # L @ L.T @ v_new = v_old
+            # torch.cholesky_solve computes A^{-1} b given chol(A).
+
+            # Prepare v for solve: (B, N, D, 1)
             v_in = curr_v.unsqueeze(-1)
 
             try:
