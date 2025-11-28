@@ -40,14 +40,12 @@ class RiemannianManifold(nn.Module):
         """
         # x shape: (B, N, D) or (B, N, M, D) etc.
         # We process last dim D.
+        # Flatten arbitrary leading dims for processing
         original_shape = x.shape
         x_flat = x.reshape(-1, self.dim)
 
         # Predict raw factors
         raw = self.cholesky_field(x_flat) # (Batch*N, D*D)
-
-        # SAFETY: Clamp raw prediction to prevent explosion before softplus
-        raw = torch.clamp(raw, -5.0, 5.0)
 
         # Add Identity bias
         L_flat = raw + self.I_bias
@@ -57,8 +55,7 @@ class RiemannianManifold(nn.Module):
         L = L * self.tril_mask
 
         # Ensure positive diagonal
-        # Added epsilon to prevent singularity
-        L = L * (1 - self.diag_mask) + (F.softplus(L) + 1e-4) * self.diag_mask
+        L = L * (1 - self.diag_mask) + F.softplus(L) * self.diag_mask
 
         # Reshape back: (B, N, D, D)
         return L.view(*original_shape[:-1], self.dim, self.dim)
@@ -81,6 +78,9 @@ class RiemannianManifold(nn.Module):
         x2: (B, 1, M, D) (Key)
         Output: (B, N, M)
         """
+        # Broadcasting difference
+        # x1: (..., N, 1, D)
+        # x2: (..., 1, M, D)
         dx = x2 - x1 # (..., N, M, D)
 
         # Compute metric at midpoint
@@ -92,8 +92,7 @@ class RiemannianManifold(nn.Module):
         G_dx = torch.matmul(G, dx_un) # (..., N, M, D, 1)
         dist_sq = torch.matmul(dx_un.transpose(-1, -2), G_dx).squeeze(-1).squeeze(-1) # (..., N, M)
 
-        # SAFETY: Clamp distance
-        return torch.sqrt(torch.clamp(dist_sq, min=1e-6, max=1e6))
+        return torch.sqrt(torch.clamp(dist_sq, min=1e-6))
 
 class GeodesicFlow(nn.Module):
     """
@@ -115,6 +114,12 @@ class GeodesicFlow(nn.Module):
 
         for _ in range(steps):
             L = self.manifold.get_cholesky_factor(curr_x)
+            # We want to solve G * v_new = v_old
+            # G = L @ L.T
+            # L @ L.T @ v_new = v_old
+            # torch.cholesky_solve computes A^{-1} b given chol(A).
+
+            # Prepare v for solve: (B, N, D, 1)
             v_in = curr_v.unsqueeze(-1)
 
             try:
