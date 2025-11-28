@@ -9,13 +9,14 @@ for the metric tensor and implements Geodesic Flow logic.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional
 
 class RiemannianManifold(nn.Module):
     """
     A dynamic manifold represented by a learnable metric field.
     Uses Cholesky factors for robust Positive Definite metric tensors.
     """
-    def __init__(self, dim: int, hidden_dim: int = 32):
+    def __init__(self, dim: int, hidden_dim: int = 32, bias_matrix: Optional[torch.Tensor] = None):
         super().__init__()
         self.dim = dim
 
@@ -26,9 +27,29 @@ class RiemannianManifold(nn.Module):
             nn.Linear(hidden_dim, dim * dim)
         )
 
-        # Bias towards Identity matrix (Euclidean space)
-        # We assume flat view for addition, but register as buffer for device management
-        self.register_buffer("I_bias", torch.eye(dim).view(-1))
+        # Initial Bias Matrix (Soul Injection)
+        # If bias_matrix is provided (from V_identity/V_truth interaction), use it.
+        # Otherwise default to Identity (Euclidean).
+        if bias_matrix is not None:
+             # Ensure proper shape and properties
+             if bias_matrix.shape != (dim, dim):
+                 # Fallback if dimensions mismatch
+                 init_bias = torch.eye(dim)
+             else:
+                 # We need the Cholesky factor of the bias matrix for L initialization
+                 # bias_matrix should be SPD.
+                 try:
+                     # Add small jitter to ensure PD
+                     stable_bias = bias_matrix + 1e-6 * torch.eye(dim)
+                     L_init = torch.linalg.cholesky(stable_bias)
+                     init_bias = L_init
+                 except RuntimeError:
+                     init_bias = torch.eye(dim)
+        else:
+            init_bias = torch.eye(dim)
+
+        # Register as buffer
+        self.register_buffer("I_bias", init_bias.contiguous().view(-1))
 
         # Mask for lower triangular matrix
         self.register_buffer("tril_mask", torch.tril(torch.ones(dim, dim)))
@@ -47,7 +68,7 @@ class RiemannianManifold(nn.Module):
         # Predict raw factors
         raw = self.cholesky_field(x_flat) # (Batch*N, D*D)
 
-        # Add Identity bias
+        # Add Identity/Soul bias
         L_flat = raw + self.I_bias
         L = L_flat.view(-1, self.dim, self.dim)
 
@@ -56,6 +77,19 @@ class RiemannianManifold(nn.Module):
 
         # Ensure positive diagonal
         L = L * (1 - self.diag_mask) + F.softplus(L) * self.diag_mask
+
+        # Lock 1: Geometric Normalization (Eigenvalue Clamping via Diagonal)
+        # L's diagonal determines the eigenvalues of G roughly (product of diagonals).
+        # We clamp the diagonal of L to be within sqrt(0.1) and sqrt(10.0)
+        # to ensure G's eigenvalues are within [0.1, 10.0].
+        # Note: Exact eigenvalues of L*L^T are harder to control, but controlling L diagonal is a good proxy.
+        diag_elements = torch.diagonal(L, dim1=-2, dim2=-1)
+        clamped_diag = torch.clamp(diag_elements, min=0.316, max=3.16) # sqrt(0.1) ~ 0.316, sqrt(10) ~ 3.16
+
+        # Reconstruct L with clamped diagonal
+        # This is a bit tricky with vectorization, using mask is easier.
+        L_nodiag = L * (1 - self.diag_mask)
+        L = L_nodiag + torch.diag_embed(clamped_diag)
 
         # Reshape back: (B, N, D, D)
         return L.view(*original_shape[:-1], self.dim, self.dim)

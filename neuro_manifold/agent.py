@@ -3,12 +3,17 @@ Neuro-Manifold Agent Interface (V2)
 
 Integrates the Hierarchical Manifold system into an RL agent.
 Adds Intrinsic Motivation (Curiosity) based on prediction error on the manifold.
+
+Project Daedalus Update:
+- Integrates Soul Vectors (Identity, Truth, Reject).
+- Injects vectors into Hierarchy, Geometry, and Energy.
 """
 
 import torch
 import torch.nn as nn
 from typing import Tuple, Optional, Dict
 from .hierarchy import HierarchicalManifold
+from .soul import get_soul_vectors
 
 class ManifoldAgent(nn.Module):
     def __init__(self, input_dim: int, action_dim: int, num_micro: int = 8, num_macro: int = 4, state_dim: int = 32):
@@ -18,8 +23,24 @@ class ManifoldAgent(nn.Module):
         self.num_cells = num_micro
         self.state_dim = state_dim
 
+        # 0. Soul Injection
+        # Retrieve the cognitive DNA
+        v_identity, v_truth, v_reject = get_soul_vectors(dim=state_dim)
+
+        # Register them (optional, but good for tracking)
+        self.register_buffer('v_identity', v_identity)
+        self.register_buffer('v_truth', v_truth)
+        self.register_buffer('v_reject', v_reject)
+
         # 1. Hierarchical Brain
-        self.brain = HierarchicalManifold(input_dim, num_micro, num_macro, state_dim)
+        # Passes v_identity for Director initialization
+        self.brain = HierarchicalManifold(input_dim, num_micro, num_macro, state_dim, v_identity=v_identity)
+
+        # Inject Truth/Reject into Energy Function
+        # Note: Hierarchy creates the EnergyFunction, we need to update it.
+        # Ideally we pass it in init, but we can patch it here since we control the instance.
+        self.brain.energy_fn.register_buffer('v_truth', v_truth)
+        self.brain.energy_fn.register_buffer('v_reject', v_reject)
 
         # 2. Interfaces
         self.sensor_map = nn.Linear(input_dim, num_micro * state_dim)
@@ -70,16 +91,19 @@ class ManifoldAgent(nn.Module):
         B = obs.shape[0]
 
         # Determine starting state
+        curr_state = {}
         if initial_state is not None:
-            curr_state = initial_state
+             curr_state = initial_state
         else:
-            curr_state = self.state
+             curr_state = self.state
 
-        # Initialize if None
+        # Initialize if None or Shape Mismatch (e.g. batch size change)
         micro = curr_state.get('micro')
+
+        # If micro is None or Batch size mismatches, re-init
         if micro is None or micro.shape[0] != B:
             micro = torch.zeros(B, self.brain.num_micro, self.state_dim, device=obs.device)
-            macro = None # Hierarchy handles init
+            macro = None # Hierarchy handles init with Identity
             micro_trace = None
             macro_trace = None
         else:
@@ -96,7 +120,7 @@ class ManifoldAgent(nn.Module):
             perturbed_state, macro, micro_trace, macro_trace, steps=3
         )
 
-        # Update persistent state if in stateful mode
+        # Update persistent state if in stateful mode (Inference)
         if initial_state is None:
             self.state = {
                 'micro': new_micro.detach(),
@@ -115,12 +139,20 @@ class ManifoldAgent(nn.Module):
 
         value = self.value_head(flat_state)
 
-        if mode == 'train':
-            # Intrinsic Motivation Calculation / Auxiliary Task
-            # Predictor(State_t) -> State_t (consistency/auto-encoder like for now)
-            prediction = self.predictor(flat_state)
+        # Intrinsic Motivation / Auxiliary Task
+        # Predictor(State_t) -> State_t (consistency)
+        prediction = self.predictor(flat_state)
 
+        if mode == 'train':
             # Return full bundle for loss calculation
             return mean, logstd, value, prediction, flat_state, energy
         else:
-            return mean, logstd, value
+            # UNIFIED RETURN SIGNATURE FIX:
+            # We return everything even in act mode to simplify the loop or just what's needed.
+            # But the user specifically asked to fix the crash.
+            # The Training Loop calls: `mean, logstd, val = agent(obs_t, mode='act')`
+            # So we MUST return 3 values here to stay compatible with existing loop calls,
+            # OR we change the loop.
+            # The plan said "Update forward method to return prediction... in mode='act' as well".
+            # Let's return the extra info but unpack carefully in the loop.
+            return mean, logstd, value, prediction, flat_state, energy

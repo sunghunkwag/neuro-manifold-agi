@@ -1,0 +1,79 @@
+================================================================================
+Project Daedalus - Neuro-Manifold V3 Evolution
+================================================================================
+/home/jules/.pyenv/versions/3.12.12/lib/python3.12/site-packages/gymnasium/envs/registration.py:512: DeprecationWarning: [33mWARN: The environment HalfCheetah-v4 is out of date. You should consider upgrading to version `v5`.[0m
+  logger.deprecation(
+ManifoldAgent(
+  (brain): HierarchicalManifold(
+    (geometry): RiemannianManifold(
+      (cholesky_field): Sequential(
+        (0): Linear(in_features=32, out_features=32, bias=True)
+        (1): SiLU()
+        (2): Linear(in_features=32, out_features=1024, bias=True)
+      )
+    )
+    (energy_fn): EnergyFunction(
+      (net): Sequential(
+        (0): Linear(in_features=32, out_features=64, bias=True)
+        (1): SiLU()
+        (2): Linear(in_features=64, out_features=1, bias=True)
+      )
+    )
+    (micro_layer): ManifoldAutomata(
+      (geometry): RiemannianManifold(
+        (cholesky_field): Sequential(
+          (0): Linear(in_features=32, out_features=32, bias=True)
+          (1): SiLU()
+          (2): Linear(in_features=32, out_features=1024, bias=True)
+        )
+      )
+      (msg_fn): Sequential(
+        (0): Linear(in_features=64, out_features=32, bias=True)
+        (1): SiLU()
+        (2): Linear(in_features=32, out_features=32, bias=True)
+      )
+      (update_fn): Sequential(
+        (0): Linear(in_features=64, out_features=64, bias=True)
+        (1): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+        (2): SiLU()
+        (3): Linear(in_features=64, out_features=32, bias=True)
+        (4): Tanh()
+      )
+    )
+    (macro_layer): ManifoldAutomata(
+      (geometry): RiemannianManifold(
+        (cholesky_field): Sequential(
+          (0): Linear(in_features=32, out_features=32, bias=True)
+          (1): SiLU()
+          (2): Linear(in_features=32, out_features=1024, bias=True)
+        )
+      )
+      (msg_fn): Sequential(
+        (0): Linear(in_features=64, out_features=32, bias=True)
+        (1): SiLU()
+        (2): Linear(in_features=32, out_features=32, bias=True)
+      )
+      (update_fn): Sequential(
+        (0): Linear(in_features=64, out_features=64, bias=True)
+        (1): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+        (2): SiLU()
+        (3): Linear(in_features=64, out_features=32, bias=True)
+        (4): Tanh()
+      )
+    )
+    (bottom_up): MultiheadAttention(
+      (out_proj): NonDynamicallyQuantizableLinear(in_features=32, out_features=32, bias=True)
+    )
+    (top_down): Linear(in_features=32, out_features=32, bias=True)
+    (norm): LayerNorm((32,), eps=1e-05, elementwise_affine=True)
+  )
+  (sensor_map): Linear(in_features=17, out_features=512, bias=True)
+  (motor_readout): Sequential(
+    (0): Linear(in_features=512, out_features=256, bias=True)
+    (1): SiLU()
+    (2): Linear(in_features=256, out_features=12, bias=True)
+  )
+  (value_head): Linear(in_features=512, out_features=1, bias=True)
+  (predictor): Linear(in_features=512, out_features=512, bias=True)
+)
+Gen 1 [Phase 1: Warm-up] - Locking Plasticity, Truth Seeking
