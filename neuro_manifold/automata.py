@@ -60,6 +60,7 @@ class ManifoldAutomata(nn.Module):
         self.cell_rule = NeuralCell(state_dim, msg_dim=state_dim)
 
         # Projections for Attention content
+        # Note: Q, K are effectively positions in the manifold for attention
         self.W_q = nn.Linear(state_dim, state_dim)
         self.W_k = nn.Linear(state_dim, state_dim)
         self.W_v = nn.Linear(state_dim, state_dim)
@@ -91,18 +92,18 @@ class ManifoldAutomata(nn.Module):
             K = self.W_k(current_states) # (B, N, D)
             V = self.W_v(current_states) # (B, N, D)
 
-            # Compute Manifold Distance Matrix (OPTIMIZED)
-            # Use efficient calculation
-            dist = self.geometry.compute_efficient_distance(Q, K)
+            # Compute Manifold Distance Matrix
+            # Q: (B, N, 1, D)
+            # K: (B, 1, N, D)
+            # Dist: (B, N, N)
+            dist = self.geometry.compute_distance(Q.unsqueeze(2), K.unsqueeze(1))
 
             # Attention Score ~ exp(-distance^2)
             # We use negative squared distance as the logit (Kernel trick)
             scores = - (dist ** 2) / (self.state_dim ** 0.5)
 
             # Plastic Modulation
-            # SAFETY: Clamp trace to avoid explosion
-            hebbian_trace = torch.clamp(hebbian_trace, -5.0, 5.0)
-
+            # Total Attention = Softmax(Base + eta * Trace)
             modulated_scores = scores + self.eta * hebbian_trace
             attn_weights = F.softmax(modulated_scores, dim=-1)
 
@@ -112,6 +113,8 @@ class ManifoldAutomata(nn.Module):
 
             # 2. Hebbian Update
             # Fire together (High proximity/score), Wire together
+            # We use the computed attention scores (probabilities) as co-activation proxy
+            # or use raw proximity. Let's use the resulting weights.
             co_activation = attn_weights.detach()
             hebbian_trace = self.decay * hebbian_trace + (1 - self.decay) * co_activation
 

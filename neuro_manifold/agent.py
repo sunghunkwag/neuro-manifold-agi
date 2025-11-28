@@ -8,7 +8,6 @@ Adds Intrinsic Motivation (Curiosity) based on prediction error on the manifold.
 import torch
 import torch.nn as nn
 from typing import Tuple, Optional, Dict
-import copy
 from .hierarchy import HierarchicalManifold
 
 class ManifoldAgent(nn.Module):
@@ -60,36 +59,13 @@ class ManifoldAgent(nn.Module):
         """Sets the internal state."""
         self.state = state_dict
 
-    def mutate(self, noise_scale: float = 0.01):
-        """
-        Applies random mutations to the agent's parameters.
-        This simulates 'divergent thinking' or genetic drift.
-        """
-        with torch.no_grad():
-            for param in self.parameters():
-                noise = torch.randn_like(param) * noise_scale
-                param.add_(noise)
-
-    def clone(self):
-        """Returns a deep copy of the agent."""
-        return copy.deepcopy(self)
-
-    def load_brain_from(self, other_agent: 'ManifoldAgent', mix_ratio: float = 1.0):
-        """
-        Instant Knowledge Transfer.
-        Copies weights from another agent.
-        """
-        with torch.no_grad():
-            for my_param, other_param in zip(self.parameters(), other_agent.parameters()):
-                my_param.data.copy_(
-                    mix_ratio * other_param.data + (1.0 - mix_ratio) * my_param.data
-                )
-
     def forward(self, obs: torch.Tensor,
                 initial_state: Optional[Dict[str, torch.Tensor]] = None,
                 mode: str = 'act'):
         """
         Forward pass.
+        If initial_state is provided, uses that (stateless mode for training).
+        Otherwise uses self.state (stateful mode for inference).
         """
         B = obs.shape[0]
 
@@ -112,17 +88,8 @@ class ManifoldAgent(nn.Module):
             macro_trace = curr_state.get('macro_trace')
 
         # 1. Sensation
-        # SAFETY: Check for NaNs and Infs in input
-        obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
-
         sensory_signal = self.sensor_map(obs).reshape(B, self.brain.num_micro, self.state_dim)
         perturbed_state = micro + sensory_signal
-
-        # Adaptive Noise (The "Edge of Chaos" perturbation)
-        # In training, we sometimes want to kick the state to avoid stuck loops.
-        # Simple heuristic: Add small noise.
-        if mode == 'train':
-            perturbed_state = perturbed_state + torch.randn_like(perturbed_state) * 0.01
 
         # 2. Cognition (Hierarchical Simulation)
         new_micro, new_macro, new_micro_trace, new_macro_trace, energy = self.brain(
@@ -143,14 +110,17 @@ class ManifoldAgent(nn.Module):
         action_out = self.motor_readout(flat_state)
         mean, logstd = action_out.chunk(2, dim=-1)
 
-        # CLAMP: Ensure finite outputs
-        mean = torch.tanh(mean) # -1 to 1
+        # Clamp logstd for stability
         logstd = torch.clamp(logstd, -20, 2)
 
         value = self.value_head(flat_state)
 
         if mode == 'train':
+            # Intrinsic Motivation Calculation / Auxiliary Task
+            # Predictor(State_t) -> State_t (consistency/auto-encoder like for now)
             prediction = self.predictor(flat_state)
+
+            # Return full bundle for loss calculation
             return mean, logstd, value, prediction, flat_state, energy
         else:
             return mean, logstd, value

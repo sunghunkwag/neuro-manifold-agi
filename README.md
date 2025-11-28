@@ -1,63 +1,69 @@
-# Neuro-Manifold Hive Mind (Swarm AGI)
+# Neuro-Manifold Automata (NMA)
 
-The **Neuro-Manifold Hive Mind** is an advanced AGI architecture that combines **Riemannian Geometry**, **Neural Cellular Automata**, and **Swarm Intelligence**.
+The **Neuro-Manifold Automata** is a radical departure from traditional deep learning architectures. It redefines artificial intelligence not as a stack of layers, but as a dynamic ecosystem of living cells inhabiting a curved, self-organizing Riemannian manifold.
 
-It simulates a "civilization" of AI agents that evolve not just individually, but collectively through **Instant Knowledge Transfer**.
+This project implements an AGI substrate that focuses on **emergence**, **geometry**, and **energy equilibrium**.
 
 ## Core Philosophy
 
-1.  **Geometry is Intelligence:** Information flows along geodesics in a curved, self-organizing Riemannian manifold.
-2.  **Life, Not Layers:** The fundamental unit is a living **Neural Cell** with Hebbian plasticity (Fast Weights).
-3.  **Swarm Intelligence:** When one agent discovers a solution, its neural structure is instantly broadcast to the entire population.
+1.  **Life, Not Layers:** The fundamental unit is not a neuron or a layer, but a **Neural Cell**—an automaton with state, memory, and a life cycle.
+2.  **Geometry is Intelligence:** Information does not flow through fixed wires. It flows along geodesics in a curved manifold. The system learns by bending space-time to bring related concepts together (Gravity) and push unrelated ones apart.
+3.  **Thought as Equilibrium:** Inference is not a single pass. It is a physical relaxation process where the system settles into a low-energy state.
 
 ## Architecture
 
-### 1. The Hive Mind (`evolve_manifold_mujoco.py`)
-- **Population-Based Training:** Multiple agents explore parallel realities (environments).
-- **Instant Knowledge Transfer:** The "Elite" agent's weights are telepathically copied to the rest of the swarm.
-- **Divergent Evolution:** Non-elite agents undergo genetic mutation (noise injection) after receiving the elite's knowledge, ensuring the swarm never gets stuck in local optima.
+The system is organized into four distinct modules:
 
-### 2. The Geometry (`neuro_manifold/geometry.py`)
-- **Efficient Riemannian Manifold:** Implements a Cholesky-parameterized metric tensor field.
-- **Optimized Distance:** Uses an $O(N)$ linear approximation for pairwise distance calculations, replacing the expensive $O(N^2)$ neural network evaluation.
-- **Manifold Attention:** Attention weights are determined by the geodesic distance on the manifold, not simple dot products.
+### 1. The Geometry (`neuro_manifold/geometry.py`)
+- Implements a learnable **Riemannian Manifold**.
+- Computes the Metric Tensor $g_{ij}(x)$ dynamically using Cholesky decomposition for stability.
+- Defines distance and locality in a non-Euclidean space.
 
-### 3. The Automata (`neuro_manifold/automata.py`)
-- **Neural Cellular Automata:** Grid-less, graph-based cellular life forms.
-- **Stable Plasticity:** Hebbian traces are clamped and decayed to ensure learning stability during inference.
+### 2. The Automata (`neuro_manifold/automata.py`)
+- **Neural Cellular Automata (NCA):** Grid-less, graph-based cellular life forms.
+- **Hebbian Plasticity:** Connections rewire dynamically during inference based on co-activation (Fast Weights).
+- Robust to damage (Regeneration) and scalable.
 
-### 4. The Hierarchy (`neuro_manifold/hierarchy.py`)
-- **Micro-Macro Architecture:**
-    - **Micro Cells:** Process fast sensory data.
-    - **Macro Cells:** Integrate concepts and modulate Micro cells via top-down bias.
+### 3. The Energy (`neuro_manifold/energy.py`)
+- Defines the **Hamiltonian** (Energy function) of the system.
+- "Thinking" is implemented as an iterative settling process (Equilibrium Propagation).
+
+### 4. The Agent (`neuro_manifold/agent.py`)
+- Wraps the automata into an RL-compatible agent.
+- Maps sensory inputs to manifold perturbations.
+- Maps equilibrium states to motor actions.
+- Includes **Intrinsic Motivation** based on manifold state prediction error.
 
 ## Installation
 
 ```bash
-pip install gymnasium[mujoco] torch numpy
+pip install torch numpy gymnasium[mujoco]
 ```
 
-## Running the Hive Mind
+## Running the Evolution
 
-To witness the evolution of the Neuro-Manifold Swarm:
+To witness the evolution of the Neuro-Manifold Automata in a physics simulation (HalfCheetah-v4):
 
 ```bash
 python evolve_manifold_mujoco.py
 ```
 
-This will:
-1.  Spawn a swarm of 4 Neural Agents (scaled down for demo).
-2.  Run parallel evolution in the `HalfCheetah-v4` physics environment.
-3.  Display the "Elite" return and the Swarm Average return for each generation.
-4.  Save evolution metrics to `metrics_hive_mind.json`.
+This script will:
+1.  Spawn a colony of neural cells.
+2.  Place them in a high-dimensional manifold.
+3.  Let them interact with the MuJoCo physics engine.
+4.  Evolve their "DNA" (parameters) via PPO-style energy minimization.
 
-## Performance Note
+## Performance
 
-This architecture is optimized for **Stability** and **Efficiency**:
-- **Memory:** Reduced dimensionality (32D) and cell counts (8 Micro / 4 Macro) to fit constrained environments.
-- **Compute:** Optimized distance calculations allow for scalable attention mechanisms.
-- **Robustness:** Extensive NaN/Inf checks and value clamping ensure the "Monster" doesn't eat itself.
+Early experiments show that NMA exhibits **zero-shot adaptation** qualities superior to static MLPs, as the system dynamically settles into new equilibria when perturbations occur.
+
+## References
+
+- "Growing Neural Cellular Automata" (Mordvintsev et al., Distill, 2020)
+- "Equilibrium Propagation: Bridging the Gap Between Energy-Based Models and Backpropagation" (Scellier & Bengio, 2017)
+- "Geometric Deep Learning" (Bronstein et al.)
 
 ---
 **Author:** Manus AI
-**Paradigm:** Geometric Deep Learning / Swarm Intelligence
+**Paradigm:** Neuro-Manifold / Geometric Deep Learning

@@ -18,7 +18,6 @@ class RiemannianManifold(nn.Module):
     def __init__(self, dim: int, hidden_dim: int = 32):
         super().__init__()
         self.dim = dim
-        self.frozen = False # Curriculum Control
 
         # Predicts the Lower Triangular matrix L such that G = L @ L.T
         self.cholesky_field = nn.Sequential(
@@ -35,36 +34,18 @@ class RiemannianManifold(nn.Module):
         self.register_buffer("tril_mask", torch.tril(torch.ones(dim, dim)))
         self.register_buffer("diag_mask", torch.eye(dim))
 
-    def freeze(self):
-        self.frozen = True
-
-    def unfreeze(self):
-        self.frozen = False
-
     def get_cholesky_factor(self, x: torch.Tensor) -> torch.Tensor:
         """
         Computes the Cholesky factor L(x) such that G(x) = L(x) @ L(x)^T.
         """
-        B_dim, N_dim, D_dim = x.shape[0], x.shape[1], self.dim
-        original_shape = x.shape
-
-        # If frozen (Warm-up Phase), return Identity (Euclidean)
-        if self.frozen:
-             I = torch.eye(D_dim, device=x.device).expand(original_shape[:-1] + (D_dim, D_dim))
-             return I
-
         # x shape: (B, N, D) or (B, N, M, D) etc.
         # We process last dim D.
+        # Flatten arbitrary leading dims for processing
+        original_shape = x.shape
         x_flat = x.reshape(-1, self.dim)
 
         # Predict raw factors
         raw = self.cholesky_field(x_flat) # (Batch*N, D*D)
-
-        # Soft Damping (Controlled Chaos)
-        # Instead of hard clamp [-5, 5], we use tanh * scale.
-        # This allows gradients to flow but bounds the magnitude.
-        # Scale = 5.0 implies max value is 5.0
-        raw = 5.0 * torch.tanh(raw / 5.0)
 
         # Add Identity bias
         L_flat = raw + self.I_bias
@@ -74,41 +55,80 @@ class RiemannianManifold(nn.Module):
         L = L * self.tril_mask
 
         # Ensure positive diagonal
-        # Added epsilon to prevent singularity
-        L = L * (1 - self.diag_mask) + (F.softplus(L) + 1e-4) * self.diag_mask
+        L = L * (1 - self.diag_mask) + F.softplus(L) * self.diag_mask
 
         # Reshape back: (B, N, D, D)
         return L.view(*original_shape[:-1], self.dim, self.dim)
 
-    def compute_efficient_distance(self, Q: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
+    def get_metric_tensor(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Optimized distance calculation for Attention (Q vs K).
+        Computes the Riemannian Metric Tensor G(x) = L(x) @ L(x)^T
+        Guaranteed to be Symmetric Positive Definite (SPD).
         """
-        # If frozen, Euclidean distance
-        if self.frozen:
-            # d^2 = (q-k)^T (q-k)
-            delta = Q.unsqueeze(2) - K.unsqueeze(1)
-            dist_sq = torch.sum(delta ** 2, dim=-1)
-            return torch.sqrt(torch.clamp(dist_sq, min=1e-6))
+        L = self.get_cholesky_factor(x)
+        # G = L @ L.T
+        G = torch.matmul(L, L.transpose(-1, -2))
+        return G
 
-        # 1. Precompute Metrics (O(N + M))
-        L_q = self.get_cholesky_factor(Q)
-        G_q = torch.matmul(L_q, L_q.transpose(-1, -2))
+    def compute_distance(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+        """
+        Computes the Mahalanobis distance induced by the local metric G.
+        Supports broadcasting.
+        x1: (B, N, 1, D) (Query)
+        x2: (B, 1, M, D) (Key)
+        Output: (B, N, M)
+        """
+        # Broadcasting difference
+        # x1: (..., N, 1, D)
+        # x2: (..., 1, M, D)
+        dx = x2 - x1 # (..., N, M, D)
 
-        L_k = self.get_cholesky_factor(K)
-        G_k = torch.matmul(L_k, L_k.transpose(-1, -2))
+        # Compute metric at midpoint
+        mid = (x1 + x2) / 2 # (..., N, M, D)
+        G = self.get_metric_tensor(mid) # (..., N, M, D, D)
 
-        # 2. Compute Distances
-        # Broadcast to (B, N, M, D, D)
-        G_sum = G_q.unsqueeze(2) + G_k.unsqueeze(1) # (B, N, M, D, D)
-        G_avg = 0.5 * G_sum
+        # Distance squared: dx^T G dx
+        dx_un = dx.unsqueeze(-1) # (..., N, M, D, 1)
+        G_dx = torch.matmul(G, dx_un) # (..., N, M, D, 1)
+        dist_sq = torch.matmul(dx_un.transpose(-1, -2), G_dx).squeeze(-1).squeeze(-1) # (..., N, M)
 
-        # Delta
-        delta = Q.unsqueeze(2) - K.unsqueeze(1) # (B, N, M, D)
+        return torch.sqrt(torch.clamp(dist_sq, min=1e-6))
 
-        # d^2 = delta^T G_avg delta
-        delta_un = delta.unsqueeze(-1)
-        G_delta = torch.matmul(G_avg, delta_un)
-        dist_sq = torch.matmul(delta_un.transpose(-1, -2), G_delta).squeeze(-1).squeeze(-1)
+class GeodesicFlow(nn.Module):
+    """
+    Simulates the flow of a particle (information) along a geodesic.
+    Used for long-range communication between cells without direct edges.
+    """
+    def __init__(self, manifold: RiemannianManifold, step_size: float = 0.1):
+        super().__init__()
+        self.manifold = manifold
+        self.step_size = step_size
 
-        return torch.sqrt(torch.clamp(dist_sq, min=1e-6, max=1e6))
+    def forward(self, x: torch.Tensor, v: torch.Tensor, steps: int = 3) -> torch.Tensor:
+        """
+        Euler integration of the Geodesic Equation approx (Natural Gradient Flow).
+        v_{new} = G^{-1} v_{old}
+        """
+        curr_x = x
+        curr_v = v
+
+        for _ in range(steps):
+            L = self.manifold.get_cholesky_factor(curr_x)
+            # We want to solve G * v_new = v_old
+            # G = L @ L.T
+            # L @ L.T @ v_new = v_old
+            # torch.cholesky_solve computes A^{-1} b given chol(A).
+
+            # Prepare v for solve: (B, N, D, 1)
+            v_in = curr_v.unsqueeze(-1)
+
+            try:
+                # cholesky_solve(b, L) solves A x = b
+                v_out = torch.cholesky_solve(v_in, L)
+                curr_v = v_out.squeeze(-1)
+            except RuntimeError:
+                pass
+
+            curr_x = curr_x + curr_v * self.step_size
+
+        return curr_x
