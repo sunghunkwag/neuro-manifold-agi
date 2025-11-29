@@ -7,6 +7,7 @@ Adds Intrinsic Motivation (Curiosity) based on prediction error on the manifold.
 Project Daedalus Update:
 - Integrates Soul Vectors (Identity, Truth, Reject).
 - Injects vectors into Hierarchy, Geometry, and Energy.
+- Supports Discrete Action Spaces (Atari) and Image Inputs (CNN).
 """
 
 import torch
@@ -16,40 +17,65 @@ from .hierarchy import HierarchicalManifold
 from .soul import get_soul_vectors
 
 class ManifoldAgent(nn.Module):
-    def __init__(self, input_dim: int, action_dim: int, num_micro: int = 8, num_macro: int = 4, state_dim: int = 32):
+    def __init__(self, input_dim: int, action_dim: int,
+                 num_micro: int = 8, num_macro: int = 4, state_dim: int = 32,
+                 is_discrete: bool = False, use_cnn: bool = False):
         super().__init__()
         self.input_dim = input_dim
         self.action_dim = action_dim
         self.num_cells = num_micro
         self.state_dim = state_dim
+        self.is_discrete = is_discrete
+        self.use_cnn = use_cnn
 
         # 0. Soul Injection
-        # Retrieve the cognitive DNA
         v_identity, v_truth, v_reject = get_soul_vectors(dim=state_dim)
 
-        # Register them (optional, but good for tracking)
         self.register_buffer('v_identity', v_identity)
         self.register_buffer('v_truth', v_truth)
         self.register_buffer('v_reject', v_reject)
 
         # 1. Hierarchical Brain
-        # Passes v_identity for Director initialization
         self.brain = HierarchicalManifold(input_dim, num_micro, num_macro, state_dim, v_identity=v_identity)
 
-        # Inject Truth/Reject into Energy Function
-        # Note: Hierarchy creates the EnergyFunction, we need to update it.
-        # Ideally we pass it in init, but we can patch it here since we control the instance.
         self.brain.energy_fn.register_buffer('v_truth', v_truth)
         self.brain.energy_fn.register_buffer('v_reject', v_reject)
 
         # 2. Interfaces
-        self.sensor_map = nn.Linear(input_dim, num_micro * state_dim)
 
-        self.motor_readout = nn.Sequential(
+        # Sensation (Visual Cortex vs Linear)
+        if self.use_cnn:
+            # Simple 3-layer CNN for Atari (84x84x4 assumed standard, or similar)
+            # We assume input is (B, C, H, W).
+            # Output will be flattened and projected to manifold dimension.
+            self.visual_cortex = nn.Sequential(
+                nn.Conv2d(4, 32, kernel_size=8, stride=4),
+                nn.ReLU(),
+                nn.Conv2d(32, 64, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, kernel_size=3, stride=1),
+                nn.ReLU(),
+                nn.Flatten()
+            )
+            # 64 * 7 * 7 = 3136 for 84x84 input
+            # We map this to (num_micro * state_dim)
+            self.sensor_map = nn.Linear(3136, num_micro * state_dim)
+        else:
+            self.visual_cortex = None
+            self.sensor_map = nn.Linear(input_dim, num_micro * state_dim)
+
+        # Motor Cortex
+        self.motor_hidden = nn.Sequential(
             nn.Linear(num_micro * state_dim, 256),
-            nn.SiLU(),
-            nn.Linear(256, action_dim * 2) # Mean, LogStd
+            nn.SiLU()
         )
+
+        if self.is_discrete:
+            # Output Logits for Categorical
+            self.motor_head = nn.Linear(256, action_dim)
+        else:
+            # Output Mean, LogStd for Gaussian
+            self.motor_head = nn.Linear(256, action_dim * 2)
 
         self.value_head = nn.Linear(num_micro * state_dim, 1)
 
@@ -85,8 +111,7 @@ class ManifoldAgent(nn.Module):
                 mode: str = 'act'):
         """
         Forward pass.
-        If initial_state is provided, uses that (stateless mode for training).
-        Otherwise uses self.state (stateful mode for inference).
+        obs: (B, Obs_Dim) or (B, C, H, W) if CNN
         """
         B = obs.shape[0]
 
@@ -97,13 +122,12 @@ class ManifoldAgent(nn.Module):
         else:
              curr_state = self.state
 
-        # Initialize if None or Shape Mismatch (e.g. batch size change)
+        # Initialize if None or Shape Mismatch
         micro = curr_state.get('micro')
 
-        # If micro is None or Batch size mismatches, re-init
         if micro is None or micro.shape[0] != B:
             micro = torch.zeros(B, self.brain.num_micro, self.state_dim, device=obs.device)
-            macro = None # Hierarchy handles init with Identity
+            macro = None
             micro_trace = None
             macro_trace = None
         else:
@@ -112,7 +136,20 @@ class ManifoldAgent(nn.Module):
             macro_trace = curr_state.get('macro_trace')
 
         # 1. Sensation
-        sensory_signal = self.sensor_map(obs).reshape(B, self.brain.num_micro, self.state_dim)
+        if self.use_cnn:
+            # Expecting (B, C, H, W). If input is (B, H, W, C), permute.
+            if obs.ndim == 4 and obs.shape[-1] == 4: # Common Gym (H,W,C)
+                 obs = obs.permute(0, 3, 1, 2)
+
+            # Normalize if not already (Atari usually 0-255)
+            if obs.max() > 1.0:
+                obs = obs / 255.0
+
+            visual_features = self.visual_cortex(obs)
+            sensory_signal = self.sensor_map(visual_features).reshape(B, self.brain.num_micro, self.state_dim)
+        else:
+            sensory_signal = self.sensor_map(obs).reshape(B, self.brain.num_micro, self.state_dim)
+
         perturbed_state = micro + sensory_signal
 
         # 2. Cognition (Hierarchical Simulation)
@@ -120,7 +157,6 @@ class ManifoldAgent(nn.Module):
             perturbed_state, macro, micro_trace, macro_trace, steps=3
         )
 
-        # Update persistent state if in stateful mode (Inference)
         if initial_state is None:
             self.state = {
                 'micro': new_micro.detach(),
@@ -131,28 +167,22 @@ class ManifoldAgent(nn.Module):
 
         # 3. Action & Value
         flat_state = new_micro.reshape(B, -1)
-        action_out = self.motor_readout(flat_state)
-        mean, logstd = action_out.chunk(2, dim=-1)
 
-        # Clamp logstd for stability
-        logstd = torch.clamp(logstd, -20, 2)
+        motor_features = self.motor_hidden(flat_state)
+
+        if self.is_discrete:
+            # Return Logits
+            action_out = self.motor_head(motor_features)
+            # For compatibility with training loop that expects (mean, logstd)
+            # We return (logits, None)
+            mean = action_out
+            logstd = torch.zeros_like(mean) # Dummy
+        else:
+            action_out = self.motor_head(motor_features)
+            mean, logstd = action_out.chunk(2, dim=-1)
+            logstd = torch.clamp(logstd, -20, 2)
 
         value = self.value_head(flat_state)
-
-        # Intrinsic Motivation / Auxiliary Task
-        # Predictor(State_t) -> State_t (consistency)
         prediction = self.predictor(flat_state)
 
-        if mode == 'train':
-            # Return full bundle for loss calculation
-            return mean, logstd, value, prediction, flat_state, energy
-        else:
-            # UNIFIED RETURN SIGNATURE FIX:
-            # We return everything even in act mode to simplify the loop or just what's needed.
-            # But the user specifically asked to fix the crash.
-            # The Training Loop calls: `mean, logstd, val = agent(obs_t, mode='act')`
-            # So we MUST return 3 values here to stay compatible with existing loop calls,
-            # OR we change the loop.
-            # The plan said "Update forward method to return prediction... in mode='act' as well".
-            # Let's return the extra info but unpack carefully in the loop.
-            return mean, logstd, value, prediction, flat_state, energy
+        return mean, logstd, value, prediction, flat_state, energy

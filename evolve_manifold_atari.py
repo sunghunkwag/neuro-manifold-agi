@@ -1,92 +1,91 @@
 """
+Evolve Neuro-Manifold in Atari (Visual/Discrete) - Project Daedalus
 
-Evolve Neuro-Manifold in MuJoCo (Advanced) - Project Daedalus Edition
+This script adapts the Daedalus architecture for the Atari Benchmark.
+It tests the "Structural Truth" philosophy in a pixel-based, discrete action domain.
 
-This script runs the evolutionary/RL loop for the Neuro-Manifold Automata V3 (Daedalus).
-It incorporates the "Tri-Lock System" and "Soul Injection".
-
-Daedalus Changes:
-1.  **Soul Injection**: Initializes with Daedalus vectors.
-2.  **Tri-Lock**: Enforces stability constraints.
-3.  **Training Protocol**:
-    - Phase 1: Warm-up (Truth Learning).
-    - Phase 2: Awakening (Energy Minimization).
-4.  **Fixes**: Correct handling of agent state and return values.
-
+Environment: BreakoutNoFrameskip-v4
 """
 
 import gymnasium as gym
-
+import ale_py
 import torch
-
 import torch.nn as nn
-
 import torch.nn.functional as F
-
 import numpy as np
-
 import json
-
-from datetime import datetime
-
-from collections import deque
-
+import random
+from gymnasium.wrappers import AtariPreprocessing, FrameStackObservation, RecordEpisodeStatistics
 from neuro_manifold.agent import ManifoldAgent
 
-def train_manifold():
+# Register Atari Envs
+gym.register_envs(ale_py)
 
+def train_atari():
     print("=" * 80)
-    print("Project Daedalus - Neuro-Manifold V3 Evolution")
+    print("Project Daedalus - Atari Benchmark Verification")
     print("=" * 80)
 
-    env_id = "HalfCheetah-v4"
+    env_id = "ALE/Breakout-v5" # Modern standard ID
     seed = 42
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Environment
-    env = gym.make(env_id)
-    obs_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
+    # Atari Environment Setup
+    # ALE/Breakout-v5 usually has frameskip=4 by default.
+    # We want explicit control so we use 'frameskip=1' in make if we use AtariPreprocessing(frame_skip=4)
+    # However, AtariPreprocessing expects raw env.
+    def make_env():
+        # render_mode='rgb_array' for potential visualization or just standard
+        env = gym.make(env_id, frameskip=1, repeat_action_probability=0.0)
+        env = AtariPreprocessing(env, screen_size=84, grayscale_obs=True, scale_obs=False, frame_skip=4)
+        env = FrameStackObservation(env, stack_size=4)
+        return env
 
-    # Organism (Daedalus Agent)
-    agent = ManifoldAgent(obs_dim, action_dim, num_micro=16, num_macro=4).to(device)
+    env = make_env()
 
-    # We use a smaller LR for stability with the Energy dynamics
-    optimizer = torch.optim.AdamW(agent.parameters(), lr=3e-4, weight_decay=1e-4)
+    # Obs shape: (4, 84, 84)
+    obs_shape = env.observation_space.shape
+    action_dim = env.action_space.n
+
+    print(f"Observation Shape: {obs_shape}")
+    print(f"Action Dimension: {action_dim} (Discrete)")
+
+    # Organism (Daedalus Agent with Visual Cortex)
+    # use_cnn=True, is_discrete=True
+    agent = ManifoldAgent(
+        input_dim=0, # Ignored when use_cnn=True
+        action_dim=action_dim,
+        num_micro=32, # More neurons for visual processing
+        num_macro=8,
+        is_discrete=True,
+        use_cnn=True
+    ).to(device)
+
+    optimizer = torch.optim.AdamW(agent.parameters(), lr=2e-4, weight_decay=1e-4)
 
     print(agent)
 
     # Evolution Loop Configuration
-    n_generations = 3 # Adjusted for smoke test
-    steps_per_gen = 64 # Reduced for smoke test (verify logic flow)
-
+    n_generations = 3
+    steps_per_gen = 256 # Short horizon for verification
     gamma = 0.99
     gae_lambda = 0.95
     clip_ratio = 0.2
 
-    # Daedalus: Truth Alignment Weight
-    truth_coef = 0.1
-
     history = {'returns': [], 'energy': []}
-
-    # Pre-training / Warm-up flag
-    # In a full run, we'd loop epochs. Here we treat Generation 1 as Warm-up.
 
     for gen in range(1, n_generations + 1):
 
         # Phase Control
         if gen <= 1:
-            print(f"Gen {gen} [Phase 1: Warm-up] - Locking Plasticity, Truth Seeking")
-            agent.brain.micro_layer.learning_rate_gate = 0.0 # Lock 3
+            print(f"Gen {gen} [Phase 1: Warm-up] - Locking Plasticity")
+            agent.brain.micro_layer.learning_rate_gate = 0.0
         else:
-            print(f"Gen {gen} [Phase 2: Awakening] - Unlocking Plasticity, Energy Optimization")
-            agent.brain.micro_layer.learning_rate_gate = 1.0 # Unlock
+            print(f"Gen {gen} [Phase 2: Awakening] - Unlocking Plasticity")
+            agent.brain.micro_layer.learning_rate_gate = 1.0
 
-        # 1. Gather Experience (Life)
+        # 1. Gather Experience
         obs_buf, act_buf, rew_buf, val_buf, logp_buf, done_buf = [], [], [], [], [], []
-
-        # State Buffer for sequential training
-        # We store the state *before* the step to pass as initial_state
         state_buf = []
 
         obs, _ = env.reset(seed=seed + gen)
@@ -99,21 +98,23 @@ def train_manifold():
 
         for t in range(steps_per_gen):
 
-            # Capture current state for training later
-            # We detach to store copies
+            # Store State
             current_state = agent.get_state()
             state_buf.append(current_state)
 
-            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            # Obs to Tensor: (1, 4, 84, 84)
+            # Gym returns LazyFrames, convert to array first
+            obs_np = np.array(obs)
+            obs_t = torch.as_tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
 
             with torch.no_grad():
-                # Fix: Unpack 6 values
-                mean, logstd, val, pred, flat_state, energy = agent(obs_t, mode='act')
+                # mean here is logits
+                logits, _, val, pred, flat_state, energy = agent(obs_t, mode='act')
 
-            std = torch.exp(logstd)
-            dist = torch.distributions.Normal(mean, std)
+            # Discrete Action Sampling
+            dist = torch.distributions.Categorical(logits=logits)
             action = dist.sample()
-            logp = dist.log_prob(action).sum(axis=-1)
+            logp = dist.log_prob(action)
 
             act_np = action.cpu().numpy()[0]
             val_np = val.item()
@@ -123,24 +124,20 @@ def train_manifold():
             next_obs, reward, terminated, truncated, _ = env.step(act_np)
             done = terminated or truncated
 
-            # Daedalus: Intrinsic Reward (Energy Minimization)
-            # The agent wants to minimize Energy.
-            # In RL, Reward = -Energy.
-            # We blend External Reward (Physics) and Intrinsic (Truth/Energy).
-            # If Energy is high (Bad/Reject), Reward is low.
-            intrinsic_reward = -0.1 * energy_val
+            # Daedalus Intrinsic Reward
+            intrinsic_reward = -0.05 * energy_val
             total_reward = reward + intrinsic_reward
 
             # Store
-            obs_buf.append(obs)
+            obs_buf.append(np.array(obs)) # Store as numpy array
             act_buf.append(act_np)
-            rew_buf.append(total_reward) # Train on total reward
+            rew_buf.append(total_reward)
             val_buf.append(val_np)
             logp_buf.append(logp_np)
             done_buf.append(done)
 
             obs = next_obs
-            ep_ret += reward # Log only external reward for user visibility
+            ep_ret += reward
             ep_len += 1
 
             if done or (t == steps_per_gen - 1):
@@ -155,7 +152,7 @@ def train_manifold():
                 ep_len = 0
 
         # 2. Compute Advantages (GAE)
-        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+        obs_t = torch.as_tensor(np.array(obs), dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
             _, _, last_val, _, _, _ = agent(obs_t, mode='act')
             last_val = last_val.item()
@@ -177,43 +174,22 @@ def train_manifold():
 
         ret_buf = adv_buf + np.array(val_buf)
 
-        # 3. Optimize (Mutate/Update)
+        # 3. Optimize
         obs_tens = torch.as_tensor(np.array(obs_buf), dtype=torch.float32, device=device)
-        act_tens = torch.as_tensor(np.array(act_buf), dtype=torch.float32, device=device)
+        act_tens = torch.as_tensor(np.array(act_buf), dtype=torch.long, device=device) # Long for Discrete
         logp_tens = torch.as_tensor(np.array(logp_buf), dtype=torch.float32, device=device)
         adv_tens = torch.as_tensor(adv_buf, dtype=torch.float32, device=device)
         ret_tens = torch.as_tensor(ret_buf, dtype=torch.float32, device=device)
 
-        # Normalize adv
         adv_tens = (adv_tens - adv_tens.mean()) / (adv_tens.std() + 1e-8)
 
-        # Collate State Buffer (Dictionary of lists -> Dictionary of tensors)
-        # We need to stack the states to batch process them, BUT this is tricky with recurrent states.
-        # Standard PPO trains on shuffled batches, which breaks recurrence.
-        # Recurrent PPO usually trains on sequences.
-        # For this fix, we will just use the stored states as "Initial State" for each timestep
-        # effectively doing "Teacher Forcing" of the internal state.
-        # This allows random batch sampling without breaking the state continuity locally.
-
-        # state_buf is list of dicts.
-        # keys: micro, macro, micro_trace, macro_trace
+        # Collate State Buffer (Fix from previous step)
         collated_state = {}
         for k in ['micro', 'macro', 'micro_trace', 'macro_trace']:
-            # items are tensors of shape (1, ...). Stack to (Batch, ...)
-            # handle None
-            # If the first item is None, it means the episode started fresh.
-            # We must handle mixed None and Tensor if the batch spans reset,
-            # but here we collect sequentially.
-            # Ideally, we should pad the None with zeros matching the shape of subsequent items.
-
-            # Find first non-None to get shape
             sample_tensor = next((item for item in [s[k] for s in state_buf] if item is not None), None)
-
             if sample_tensor is None:
-                # Completely None (e.g. very first gen if agent stays None)
                 collated_state[k] = None
             else:
-                # Replace None with Zeros of sample shape
                 processed_items = []
                 for item in [s[k] for s in state_buf]:
                     if item is None:
@@ -224,15 +200,12 @@ def train_manifold():
 
         agent.train()
 
-        # Train Loop
-        # We process the whole collected batch with shuffled indices
         batch_size = len(obs_buf)
-        minibatch_size = 64
+        minibatch_size = 32 # Smaller batch for images
         indices = np.arange(batch_size)
 
-        for i in range(10): # Epochs
+        for i in range(5): # Fewer epochs for verification speed
             np.random.shuffle(indices)
-
             for start in range(0, batch_size, minibatch_size):
                 end = start + minibatch_size
                 mb_inds = indices[start:end]
@@ -243,7 +216,6 @@ def train_manifold():
                 mb_adv = adv_tens[mb_inds]
                 mb_ret = ret_tens[mb_inds]
 
-                # Slice the state dictionary
                 mb_state = {}
                 for k, v in collated_state.items():
                     if v is not None:
@@ -253,23 +225,18 @@ def train_manifold():
 
                 optimizer.zero_grad()
 
-                # Forward with injected state history (Fixes Logic Bug)
-                mean, logstd, values, prediction, flat_s, energy = agent(
+                # Forward
+                logits, _, values, prediction, flat_s, energy = agent(
                     mb_obs, initial_state=mb_state, mode='train'
                 )
 
                 # Losses
-                # 1. Prediction Loss (Reconstruction/Consistency)
                 loss_pred = torch.mean(prediction**2) * 0.01
-
-                # 2. Energy Loss (Minimize Energy directly?)
-                # We already reward low energy. We can also add aux loss to minimize energy.
                 loss_energy = energy.mean() * 0.01
 
-                # 3. PPO Loss
-                std = torch.exp(logstd)
-                dist = torch.distributions.Normal(mean, std)
-                logp = dist.log_prob(mb_act).sum(axis=-1)
+                # PPO (Categorical)
+                dist = torch.distributions.Categorical(logits=logits)
+                logp = dist.log_prob(mb_act)
 
                 ratio = torch.exp(logp - mb_logp)
                 surr1 = ratio * mb_adv
@@ -286,11 +253,9 @@ def train_manifold():
 
         print(f"Gen {gen} | Loss: {loss.item():.4f}")
 
-    # Save results
-    with open("metrics_daedalus.json", "w") as f:
+    with open("metrics_atari.json", "w") as f:
         json.dump(history, f)
-
-    print("Training Complete. Metrics saved to metrics_daedalus.json")
+    print("Atari Benchmark Verification Complete.")
 
 if __name__ == "__main__":
-    train_manifold()
+    train_atari()
