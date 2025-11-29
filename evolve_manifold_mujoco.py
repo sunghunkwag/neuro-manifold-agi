@@ -201,11 +201,26 @@ def train_manifold():
         for k in ['micro', 'macro', 'micro_trace', 'macro_trace']:
             # items are tensors of shape (1, ...). Stack to (Batch, ...)
             # handle None
-            valid_items = [s[k] for s in state_buf]
-            if valid_items[0] is None:
+            # If the first item is None, it means the episode started fresh.
+            # We must handle mixed None and Tensor if the batch spans reset,
+            # but here we collect sequentially.
+            # Ideally, we should pad the None with zeros matching the shape of subsequent items.
+
+            # Find first non-None to get shape
+            sample_tensor = next((item for item in [s[k] for s in state_buf] if item is not None), None)
+
+            if sample_tensor is None:
+                # Completely None (e.g. very first gen if agent stays None)
                 collated_state[k] = None
             else:
-                collated_state[k] = torch.cat(valid_items, dim=0)
+                # Replace None with Zeros of sample shape
+                processed_items = []
+                for item in [s[k] for s in state_buf]:
+                    if item is None:
+                         processed_items.append(torch.zeros_like(sample_tensor))
+                    else:
+                         processed_items.append(item)
+                collated_state[k] = torch.cat(processed_items, dim=0)
 
         agent.train()
 
