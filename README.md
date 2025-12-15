@@ -93,6 +93,3 @@ Watch as the **Hebbian Trace** rewires the brain in real-time to find a new equi
 
 ---
 
-**Architect:** User (The Director)
-**Engineer:** Google Jules (Project Daedalus Lead)
-**Version:** V3.1 (Multi-Domain Support: MuJoCo & Atari)
